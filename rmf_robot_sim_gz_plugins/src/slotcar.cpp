@@ -16,6 +16,9 @@
 #include <gz/sim/components/AngularVelocityCmd.hh>
 #include <gz/sim/components/PhysicsEnginePlugin.hh>
 
+#include <geometry_msgs/msg/pose.hpp> // Include the Pose message
+#include <gz/sim/components/PoseCmd.hh>
+
 #include <gz/math/eigen3.hh>
 #include <gz/msgs.hh>
 #include <gz/transport.hh>
@@ -93,6 +96,14 @@ private:
   void draw_lookahead_marker();
 
   gz::msgs::Marker_V _trajectory_marker_msg;
+  // ROS 2 publisher and timer
+  rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr _pose_publisher;
+  rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr _pose_subscriber;
+  rclcpp::TimerBase::SharedPtr _timer;
+
+  void PublishPose();
+  // Add the teleport_robot function
+  void teleport_robot(const geometry_msgs::msg::Pose::SharedPtr msg);
 };
 
 SlotcarPlugin::SlotcarPlugin()
@@ -207,6 +218,19 @@ void SlotcarPlugin::Configure(const Entity& entity,
   //executor->spin();
   dataPtr->init_ros_node(_ros_node);
 
+  auto pub_topic_name = model_name + "/robot_pose";
+  _pose_publisher = _ros_node->create_publisher<geometry_msgs::msg::Pose>(pub_topic_name, 10);
+  _timer = _ros_node->create_wall_timer(
+    std::chrono::seconds(5),
+    std::bind(&SlotcarPlugin::PublishPose, this));
+  
+  RCLCPP_INFO(_ros_node->get_logger(), "SlotcarPlugin publisher started on topic 'robot_pose'");
+  
+  auto sub_topic_name = model_name + "/sal_teleport_robot";
+  _pose_subscriber = _ros_node->create_subscription<geometry_msgs::msg::Pose>(
+      sub_topic_name, 10, std::bind(&SlotcarPlugin::teleport_robot, this, std::placeholders::_1));
+      RCLCPP_INFO(_ros_node->get_logger(), "SlotcarPlugin subscriber started on topic '%s/sal_teleport_robot'", model_name.c_str());
+  
   // Initialize Pose3d component
   enableComponent<components::Pose>(ecm, entity);
   // Initialize Bounding Box component
@@ -452,6 +476,55 @@ void SlotcarPlugin::draw_lookahead_marker()
   gz::msgs::Set(marker_msg.mutable_material()->mutable_diffuse(),
     gz::math::Color(0, 0, 1, 1));
   _gz_node.Request("/marker", marker_msg);
+}
+
+void SlotcarPlugin::PublishPose()
+{
+  geometry_msgs::msg::Pose pose_msg;
+  pose_msg.position.x = _pose.translation().x();
+  pose_msg.position.y = _pose.translation().y();
+  pose_msg.position.z = _pose.translation().z();
+  Eigen::Quaterniond q(_pose.rotation());
+  pose_msg.orientation.x = q.x();
+  pose_msg.orientation.y = q.y();
+  pose_msg.orientation.z = q.z();
+  pose_msg.orientation.w = q.w();
+
+  _pose_publisher->publish(pose_msg);
+}
+
+void SlotcarPlugin::teleport_robot(const geometry_msgs::msg::Pose::SharedPtr msg)
+{
+  // Implement the logic to teleport the robot using the received pose
+  RCLCPP_INFO(_ros_node->get_logger(), "Teleporting robot to new pose");
+
+  // Convert the received pose to Eigen::Isometry3d
+  Eigen::Isometry3d new_pose = Eigen::Isometry3d::Identity();
+  new_pose.translation().x() = msg->position.x;
+  new_pose.translation().y() = msg->position.y;
+  new_pose.translation().z() = msg->position.z;
+  Eigen::Quaterniond q(msg->orientation.w, msg->orientation.x, msg->orientation.y, msg->orientation.z);
+  new_pose.rotate(q);
+
+  // Convert Eigen::Isometry3d to gz::math::Pose3d
+  gz::math::Pose3d gz_pose(
+    new_pose.translation().x(), new_pose.translation().y(), new_pose.translation().z(),
+    q.w(), q.x(), q.y(), q.z());
+
+  // Update the _pose variable
+  _pose = new_pose;
+
+  //Optionally, you can also update the WorldPoseCmd component if needed
+  enableComponent<components::WorldPoseCmd>(*_ecm, _entity);
+  auto worldPoseCmdComp = _ecm->Component<components::WorldPoseCmd>(_entity);
+  if (worldPoseCmdComp)
+  {
+    worldPoseCmdComp->Data() = gz_pose;
+  }
+  else
+  {
+    RCLCPP_ERROR(_ros_node->get_logger(), "Failed to get WorldPoseCmd component");
+  }
 }
 
 void SlotcarPlugin::PreUpdate(const UpdateInfo& info,
