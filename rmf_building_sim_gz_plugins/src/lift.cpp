@@ -158,24 +158,27 @@ private:
 
   void read_aabbs(EntityComponentManager& ecm)
   {
+    std::vector<Entity> to_disable;
     ecm.Each<components::AxisAlignedBox,
       components::Pose>([&](const Entity& entity,
       const components::AxisAlignedBox* aabb,
       const components::Pose* pose) -> bool
       {
-        // Optimization: Read and store lift's pose and AABB whenever available, then
-        // delete the AABB component once read. Not deleting it causes rtf to drop by
-        // a 3-4x factor whenever the lift moves.
         const double volume = aabb->Data().Volume();
         if (volume > 0 && std::isfinite(volume))
         {
-          // TODO(luca) this could be a component instead of a hash map
           _initial_aabbs[entity] = aabb->Data();
           _initial_poses[entity] = pose->Data();
-          enableComponent<components::AxisAlignedBox>(ecm, entity, false);
+          to_disable.push_back(entity); // Collect for later disabling
         }
         return true;
       });
+
+    // Now disable outside the loop
+    for (const auto& entity : to_disable)
+    {
+      enableComponent<components::AxisAlignedBox>(ecm, entity, false);
+    }
   }
 
   std::vector<std::string> get_available_floors(const LiftData& lift) const
